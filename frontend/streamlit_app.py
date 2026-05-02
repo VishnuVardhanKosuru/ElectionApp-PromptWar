@@ -32,9 +32,11 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# CSS – dark navy glassmorphism theme
+# CSS – dark navy glassmorphism theme & Accessibility & CSP
 # ---------------------------------------------------------------------------
 st.markdown("""
+<meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://fonts.googleapis.com https://fonts.gstatic.com data:; connect-src 'self' http://localhost:8080 https://*.run.app;">
+<a href="#main-content" class="skip-link">Skip to Main Content</a>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
@@ -102,7 +104,20 @@ header[data-testid="stHeader"] { background: transparent; }
 label { color: #CBD5E1 !important; }
 button[data-baseweb="tab"] { color: #94A3B8 !important; font-weight: 500; }
 button[data-baseweb="tab"][aria-selected="true"] { color: #60A5FA !important; }
+.skip-link {
+    position: absolute;
+    top: -40px;
+    left: 0;
+    background: #2563EB;
+    color: white;
+    padding: 8px;
+    z-index: 1000;
+}
+.skip-link:focus {
+    top: 0;
+}
 </style>
+<div id="main-content"></div>
 """, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
@@ -326,11 +341,12 @@ with tab1:
         address_input = st.text_input(
             "Enter your full address",
             placeholder="e.g. 1600 Amphitheatre Pkwy, Mountain View, CA 94043",
+            help="Type your full residential address to find your polling location and ballot.",
             key="address_input",
-            label_visibility="collapsed",
+            label_visibility="visible",
         )
     with col_btn:
-        search_clicked = st.button("🔍 Search", use_container_width=True, key="btn_search")
+        search_clicked = st.button("🔍 Search", help="Click to search for your address", use_container_width=True, key="btn_search")
 
     if search_clicked and address_input.strip():
         with st.spinner("Fetching election data…"):
@@ -407,7 +423,7 @@ with tab2:
         unsafe_allow_html=True,
     )
 
-    ada_only = st.toggle("Show ADA-Accessible stations only", value=False, key="ada_toggle")
+    ada_only = st.toggle("Show ADA-Accessible stations only", value=False, key="ada_toggle", help="Toggle to filter out non-ADA-verified locations")
     use_address = st.session_state.address or ""
 
     if not use_address:
@@ -497,6 +513,7 @@ with tab3:
         loc_field = st.text_input(
             "Polling Location *",
             placeholder="e.g. Mountain View Community Center, 500 Castro St",
+            help="Enter the name or address of the polling place where the incident occurred",
         )
         col_type, col_sev = st.columns(2)
         with col_type:
@@ -504,13 +521,14 @@ with tab3:
                 "voter_intimidation", "machine_malfunction", "long_wait_time",
                 "accessibility_issue", "poll_worker_misconduct",
                 "voter_id_issue", "other",
-            ], format_func=lambda x: x.replace("_", " ").title())
+            ], format_func=lambda x: x.replace("_", " ").title(), help="Select the category that best fits the incident")
         with col_sev:
             severity = st.selectbox("Severity *", ["low", "medium", "high", "critical"],
-                                    format_func=str.upper)
+                                    format_func=str.upper, help="Select the severity level")
         description = st.text_area(
             "Description *",
             placeholder="Please describe what happened in as much detail as possible…",
+            help="Provide full details of the incident.",
             height=130,
         )
         st.markdown("**Optional contact information** (for follow-up only):")

@@ -77,7 +77,10 @@ def _configure_logging() -> None:
                         "formatter": "json",
                     }
                 },
-                "root": {"level": settings.log_level.upper(), "handlers": ["stdout"]},
+                "root": {
+                    "level": settings.log_level.upper(),
+                    "handlers": ["stdout"],
+                },
             }
         )
 
@@ -134,10 +137,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # ── 3. Pre-warm Google Cloud clients (non-blocking, best-effort) ──────
-    from app.services.cloud_services import get_firestore_client, get_gcs_client  # noqa: PLC0415
+    from app.services.cloud_services import (
+        get_firestore_client,
+        get_gcs_client,
+    )  # noqa: PLC0415
 
-    get_firestore_client()   # Warms connection pool; logs success / fallback
-    get_gcs_client()         # Same
+    get_firestore_client()  # Warms connection pool; logs success / fallback
+    get_gcs_client()  # Same
 
     logger.info("Election Process Assistant startup complete.")
 
@@ -296,9 +302,13 @@ def create_app() -> FastAPI:
             ),
         }
 
+    @app.get("/healthz", include_in_schema=False)
+    async def healthz():
+        """GCP Load Balancer health check endpoint."""
+        return JSONResponse(content={"status": "ok"}, status_code=200)
+
     # ── Router registration ───────────────────────────────────────────────
     app.include_router(router)
-
 
     return app
 

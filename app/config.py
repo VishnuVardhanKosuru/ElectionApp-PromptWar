@@ -57,7 +57,9 @@ class Settings(BaseSettings):
         default="*",
         description="Comma-separated CORS allowed origins.",
     )
-    env: str = Field(default="production", description="Runtime environment label.")
+    env: str = Field(
+        default="production", description="Runtime environment label."
+    )
 
     # ── Google Cloud ───────────────────────────────────────────────────────
     gcp_project: Optional[str] = Field(
@@ -130,7 +132,10 @@ class Settings(BaseSettings):
             self.civic_api_key = value
             logger.info(
                 "CIVIC_API_KEY resolved via Google Secret Manager.",
-                extra={"secret": self.secret_name, "project": self.gcp_project},
+                extra={
+                    "secret": self.secret_name,
+                    "project": self.gcp_project,
+                },
             )
         elif not self.civic_api_key.strip():
             logger.error(
@@ -146,7 +151,9 @@ class Settings(BaseSettings):
         Returns:
             List of stripped, non-empty origin strings.
         """
-        return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+        return [
+            o.strip() for o in self.allowed_origins.split(",") if o.strip()
+        ]
 
     @property
     def is_gcp(self) -> bool:

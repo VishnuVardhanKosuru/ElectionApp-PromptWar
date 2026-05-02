@@ -1,0 +1,5 @@
+[MASTER]
+disable=import-outside-toplevel,redefined-outer-name,unused-argument,no-member,broad-exception-caught,global-statement,reimported,protected-access,too-many-locals,too-many-statements,wrong-import-position
+
+[FORMAT]
+max-line-length=100

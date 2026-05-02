@@ -55,7 +55,9 @@ def _map_address(raw: Optional[dict[str, Any]]) -> Optional[Address]:
     )
 
 
-def _map_normalized_input(raw: Optional[dict[str, Any]]) -> Optional[NormalizedInput]:
+def _map_normalized_input(
+    raw: Optional[dict[str, Any]],
+) -> Optional[NormalizedInput]:
     """Map a raw normalizedInput dict to a ``NormalizedInput`` model.
 
     Args:
@@ -156,7 +158,11 @@ def _map_contest(raw: dict[str, Any]) -> ElectionContest:
         office=raw.get("office"),
         level=raw.get("level"),
         roles=raw.get("roles"),
-        district=district_raw.get("name") if isinstance(district_raw, dict) else None,
+        district=(
+            district_raw.get("name")
+            if isinstance(district_raw, dict)
+            else None
+        ),
         candidates=candidates or None,
         ballotTitle=raw.get("ballotTitle"),
         ballotSubtitle=raw.get("ballotSubtitle"),
@@ -250,11 +256,12 @@ class ElectionService:
         )
         raw = await self._client.get_voter_info(address, election_id)
 
-        election = _map_election(raw["election"]) if raw.get("election") else None
+        election = (
+            _map_election(raw["election"]) if raw.get("election") else None
+        )
         normalized = _map_normalized_input(raw.get("normalizedInput"))
         polling_locs = [
-            _map_polling_location(p)
-            for p in raw.get("pollingLocations", [])
+            _map_polling_location(p) for p in raw.get("pollingLocations", [])
         ]
         contests = [_map_contest(c) for c in raw.get("contests", [])]
 
@@ -301,7 +308,9 @@ class ElectionService:
             "Fetching representatives.",
             extra={"roles": roles, "include_offices": include_offices},
         )
-        raw = await self._client.get_representatives(address, roles, include_offices)
+        raw = await self._client.get_representatives(
+            address, roles, include_offices
+        )
 
         normalized = _map_normalized_input(raw.get("normalizedInput"))
         offices = [_map_office(o) for o in raw.get("offices", [])]

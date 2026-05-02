@@ -76,7 +76,9 @@ class CivicResponseCache:
         Returns:
             A hex-encoded SHA-256 digest string.
         """
-        raw = json.dumps({"endpoint": endpoint, "params": params}, sort_keys=True)
+        raw = json.dumps(
+            {"endpoint": endpoint, "params": params}, sort_keys=True
+        )
         return hashlib.sha256(raw.encode()).hexdigest()
 
     def get(self, key: str) -> Optional[dict[str, Any]]:

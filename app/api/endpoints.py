@@ -149,7 +149,9 @@ def _handle_civic_error(exc: Exception) -> None:
         )
 
     if isinstance(exc, RuntimeError) and "CIVIC_API_KEY" in str(exc):
-        logger.critical("CIVIC_API_KEY environment variable is not configured.")
+        logger.critical(
+            "CIVIC_API_KEY environment variable is not configured."
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ErrorDetail(
@@ -220,7 +222,13 @@ async def cache_stats() -> dict[str, Any]:
         logger.info("Cache stats requested.", extra=stats)
         return stats
     except RuntimeError:
-        return {"hits": 0, "misses": 0, "size": 0, "maxsize": 0, "note": "Cache not initialised"}
+        return {
+            "hits": 0,
+            "misses": 0,
+            "size": 0,
+            "maxsize": 0,
+            "note": "Cache not initialised",
+        }
 
 
 @router.get(
@@ -253,10 +261,22 @@ async def gcp_status() -> dict[str, Any]:
 
     cfg = _settings()
     return {
-        "cloud_logging": "connected" if _gcp_logging_client is not None else "stdout_fallback",
-        "secret_manager": "configured" if cfg.gcp_project else "not_configured",
-        "firestore": "connected" if get_firestore_client() is not None else "unavailable",
-        "cloud_storage": "connected" if get_gcs_client() is not None else "unavailable",
+        "cloud_logging": (
+            "connected"
+            if _gcp_logging_client is not None
+            else "stdout_fallback"
+        ),
+        "secret_manager": (
+            "configured" if cfg.gcp_project else "not_configured"
+        ),
+        "firestore": (
+            "connected"
+            if get_firestore_client() is not None
+            else "unavailable"
+        ),
+        "cloud_storage": (
+            "connected" if get_gcs_client() is not None else "unavailable"
+        ),
         "gcp_project": cfg.gcp_project or "local",
         "cache_backend": "cachetools.TTLCache",
     }
@@ -375,7 +395,9 @@ async def get_election_info(
     """
     logger.info(
         "get_election_info called.",
-        extra={"client_ip": request.client.host if request.client else "unknown"},
+        extra={
+            "client_ip": request.client.host if request.client else "unknown"
+        },
     )
     start = time.monotonic()
     try:
@@ -429,7 +451,9 @@ async def get_representatives(
     """
     logger.info(
         "get_representatives called.",
-        extra={"client_ip": request.client.host if request.client else "unknown"},
+        extra={
+            "client_ip": request.client.host if request.client else "unknown"
+        },
     )
     start = time.monotonic()
     try:
@@ -470,8 +494,14 @@ def _infer_ada_compliance(location_name: str, notes: str) -> bool:
     """
     combined = (location_name + " " + notes).lower()
     ada_keywords = [
-        "accessible", "ada", "wheelchair", "ramp", "elevator",
-        "disability", "handicap", "accessible entrance",
+        "accessible",
+        "ada",
+        "wheelchair",
+        "ramp",
+        "elevator",
+        "disability",
+        "handicap",
+        "accessible entrance",
     ]
     non_ada_keywords = ["stairs only", "not accessible", "no elevator"]
     if any(kw in combined for kw in non_ada_keywords):
@@ -495,7 +525,9 @@ def _mock_wait_minutes(location_name: str) -> int:
     # Peak hours: 7-9 AM and 5-7 PM
     is_peak = (7 <= hour <= 9) or (17 <= hour <= 19)
     base = int(hashlib.md5(location_name.encode()).hexdigest(), 16) % 30
-    return base + (random.randint(15, 30) if is_peak else random.randint(0, 10))  # noqa: S311
+    return base + (
+        random.randint(15, 30) if is_peak else random.randint(0, 10)
+    )  # noqa: S311
 
 
 @router.get(
@@ -556,23 +588,33 @@ async def get_polling_locations(
 
     raw_locations = raw.get("pollingLocations", [])
     normalized_raw = raw.get("normalizedInput", {})
-    normalized = NormalizedInput(
-        line1=normalized_raw.get("line1"),
-        city=normalized_raw.get("city"),
-        state=normalized_raw.get("state"),
-        zip=normalized_raw.get("zip"),
-    ) if normalized_raw else None
+    normalized = (
+        NormalizedInput(
+            line1=normalized_raw.get("line1"),
+            city=normalized_raw.get("city"),
+            state=normalized_raw.get("state"),
+            zip=normalized_raw.get("zip"),
+        )
+        if normalized_raw
+        else None
+    )
 
     enhanced: list[EnhancedPollingLocation] = []
     for loc in raw_locations:
         addr_raw = loc.get("address", {})
-        address_obj = Address(
-            line1=addr_raw.get("line1"),
-            city=addr_raw.get("city"),
-            state=addr_raw.get("state"),
-            zip=addr_raw.get("zip"),
-        ) if addr_raw else None
-        name = loc.get("name") or addr_raw.get("locationName", "Polling Station")
+        address_obj = (
+            Address(
+                line1=addr_raw.get("line1"),
+                city=addr_raw.get("city"),
+                state=addr_raw.get("state"),
+                zip=addr_raw.get("zip"),
+            )
+            if addr_raw
+            else None
+        )
+        name = loc.get("name") or addr_raw.get(
+            "locationName", "Polling Station"
+        )
         notes = loc.get("notes", "")
         is_ada = _infer_ada_compliance(name, notes)
         wait = _mock_wait_minutes(name)
@@ -726,7 +768,9 @@ async def get_wait_times(
     """
     logger.info(
         "get_wait_times called.",
-        extra={"client_ip": request.client.host if request.client else "unknown"},
+        extra={
+            "client_ip": request.client.host if request.client else "unknown"
+        },
     )
     start = time.monotonic()
     try:

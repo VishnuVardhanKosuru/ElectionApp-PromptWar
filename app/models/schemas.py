@@ -290,7 +290,9 @@ class ElectionContest(BaseModel):
     district: Optional[str] = None
     candidates: Optional[list[str]] = None
     ballot_title: Optional[str] = Field(default=None, alias="ballotTitle")
-    ballot_subtitle: Optional[str] = Field(default=None, alias="ballotSubtitle")
+    ballot_subtitle: Optional[str] = Field(
+        default=None, alias="ballotSubtitle"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -573,9 +575,9 @@ class EnhancedPollingListResponse(BaseModel):
 class WaitStatus(str, Enum):
     """Categorical wait-time status for a polling station."""
 
-    LOW = "low"        # < 15 min
+    LOW = "low"  # < 15 min
     MODERATE = "moderate"  # 15–30 min
-    HIGH = "high"      # 30–60 min
+    HIGH = "high"  # 30–60 min
     VERY_HIGH = "very_high"  # > 60 min
 
 

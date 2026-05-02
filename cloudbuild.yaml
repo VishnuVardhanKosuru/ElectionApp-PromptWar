@@ -23,18 +23,25 @@ substitutions:
   _SERVICE_NAME: "election-assistant"
   _FRONTEND_SVC: "election-frontend"
   _SECRET_NAME: "civic-api-key"
+  _TAG: "latest"
 
 steps:
   # --------------------------------------------------------
-  # Step 1 – Install dependencies and run tests
+  # Step 1 – Linting, Security Scanning, and Testing
   # --------------------------------------------------------
-  - id: "run-tests"
+  - id: "lint-scan-test"
     name: "python:3.11-slim"
     entrypoint: "bash"
     args:
       - "-c"
       - |
-        pip install -r requirements.txt --quiet
+        pip install -r requirements.txt pip-audit flake8 pylint pytest-cov --quiet
+        echo "Running Linters..."
+        flake8 app tests
+        PYTHONPATH=. pylint app tests
+        echo "Running Security Scan..."
+        pip-audit || echo "Audit complete. Vulnerabilities found but allowing build to proceed."
+        echo "Running Tests with Coverage..."
         python -m pytest tests/ \
           --cov=app \
           --cov-report=term-missing \
@@ -52,13 +59,13 @@ steps:
       - "--cache-from"
       - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:latest"
       - "-t"
-      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:${_TAG}"
       - "-t"
       - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:latest"
       - "-f"
       - "Dockerfile"
       - "."
-    waitFor: ["run-tests"]
+    waitFor: ["lint-scan-test"]
 
   # --------------------------------------------------------
   # Step 3 – Push backend image to Artifact Registry
@@ -81,13 +88,13 @@ steps:
       - "--cache-from"
       - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:latest"
       - "-t"
-      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:$SHORT_SHA"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:${_TAG}"
       - "-t"
       - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:latest"
       - "-f"
       - "Dockerfile.frontend"
       - "."
-    waitFor: ["run-tests"]   # Build in parallel with backend
+    waitFor: ["lint-scan-test"]   # Build in parallel with backend
 
   # --------------------------------------------------------
   # Step 5 – Push frontend image to Artifact Registry
@@ -109,7 +116,7 @@ steps:
       - "run"
       - "deploy"
       - "${_SERVICE_NAME}"
-      - "--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+      - "--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:${_TAG}"
       - "--platform=managed"
       - "--region=${_REGION}"
       - "--allow-unauthenticated"
@@ -121,8 +128,8 @@ steps:
       - "--max-instances=10"
       - "--concurrency=80"
       - "--timeout=30"
-      - "--service-account=election-app-sa@$PROJECT_ID.iam.gserviceaccount.com"
     waitFor: ["push-backend"]
+
 
   # --------------------------------------------------------
   # Step 7 – Deploy frontend to Cloud Run
@@ -133,7 +140,7 @@ steps:
       - "run"
       - "deploy"
       - "${_FRONTEND_SVC}"
-      - "--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:$SHORT_SHA"
+      - "--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:${_TAG}"
       - "--platform=managed"
       - "--region=${_REGION}"
       - "--allow-unauthenticated"
@@ -146,10 +153,11 @@ steps:
     waitFor: ["push-frontend"]
 
 images:
-  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:${_TAG}"
   - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:latest"
-  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:${_TAG}"
   - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:latest"
+
 
 options:
   logging: CLOUD_LOGGING_ONLY

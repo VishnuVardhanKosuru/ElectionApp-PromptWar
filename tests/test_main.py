@@ -63,6 +63,14 @@ def client() -> TestClient:
         yield c
 
 
+@pytest.fixture(autouse=True)
+def mock_firestore_client():
+    """Globally mock the Firestore client so tests do not hang on real network calls."""
+    with patch("app.services.cloud_services.get_firestore_client", return_value=None):
+        yield
+
+
+
 # Minimal payloads for reuse across tests
 VALID_ADDRESS = "1600 Amphitheatre Pkwy, Mountain View, CA 94043"
 VALID_ELECTION_PAYLOAD = {"address": VALID_ADDRESS}
@@ -225,7 +233,9 @@ def test_get_election_info_success(client: TestClient) -> None:
         new_callable=AsyncMock,
         return_value=_mock_voter_info_response(),
     ):
-        response = client.post("/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD)
+        response = client.post(
+            "/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD
+        )
 
     assert response.status_code == 200
     data = response.json()
@@ -246,7 +256,9 @@ def test_get_representatives_success(client: TestClient) -> None:
         new_callable=AsyncMock,
         return_value=_mock_representatives_response(),
     ):
-        response = client.post("/api/v1/representatives", json=VALID_REP_PAYLOAD)
+        response = client.post(
+            "/api/v1/representatives", json=VALID_REP_PAYLOAD
+        )
 
     assert response.status_code == 200
     data = response.json()
@@ -262,22 +274,24 @@ def test_get_representatives_success(client: TestClient) -> None:
 @pytest.mark.parametrize(
     "bad_address",
     [
-        "'; DROP TABLE elections; --",   # SQL injection attempt
-        "<script>alert(1)</script>",      # XSS attempt
-        "../../etc/passwd",               # Path traversal attempt
-        "a" * 301,                        # Too long
-        "AB",                             # Too short
+        "'; DROP TABLE elections; --",  # SQL injection attempt
+        "<script>alert(1)</script>",  # XSS attempt
+        "../../etc/passwd",  # Path traversal attempt
+        "a" * 301,  # Too long
+        "AB",  # Too short
     ],
 )
-def test_malformed_address_rejected(client: TestClient, bad_address: str) -> None:
+def test_malformed_address_rejected(
+    client: TestClient, bad_address: str
+) -> None:
     """POST with a disallowed address should return 422 Unprocessable Entity."""
     response = client.post(
         "/api/v1/elections/info",
         json={"address": bad_address},
     )
-    assert response.status_code == 422, (
-        f"Expected 422 for address: {bad_address!r}, got {response.status_code}"
-    )
+    assert (
+        response.status_code == 422
+    ), f"Expected 422 for address: {bad_address!r}, got {response.status_code}"
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +304,13 @@ def test_civic_api_timeout_returns_504(client: TestClient) -> None:
     with patch(
         "app.services.civic_api_client.CivicApiClient._request",
         new_callable=AsyncMock,
-        side_effect=httpx.ReadTimeout("Request timed out", request=MagicMock()),
+        side_effect=httpx.ReadTimeout(
+            "Request timed out", request=MagicMock()
+        ),
     ):
-        response = client.post("/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD)
+        response = client.post(
+            "/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD
+        )
 
     assert response.status_code == 504
     data = response.json()
@@ -319,7 +337,9 @@ def test_civic_api_rate_limit_returns_429(client: TestClient) -> None:
         new_callable=AsyncMock,
         side_effect=exc,
     ):
-        response = client.post("/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD)
+        response = client.post(
+            "/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD
+        )
 
     assert response.status_code == 429
     data = response.json()
@@ -346,7 +366,9 @@ def test_civic_api_server_error_returns_502(client: TestClient) -> None:
         new_callable=AsyncMock,
         side_effect=exc,
     ):
-        response = client.post("/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD)
+        response = client.post(
+            "/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD
+        )
 
     assert response.status_code == 502
     data = response.json()
@@ -379,17 +401,24 @@ def test_civic_api_404_returns_400(client: TestClient) -> None:
         new_callable=AsyncMock,
         side_effect=exc,
     ):
-        response = client.post("/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD)
+        response = client.post(
+            "/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD
+        )
 
     # Must NOT be a 500 – the app should handle upstream 4xx gracefully
-    assert response.status_code != 500, "Application must not crash on Civic API 404"
-    assert response.status_code in (400, 404), (
-        f"Expected 400 for upstream 404, got {response.status_code}"
-    )
+    assert (
+        response.status_code != 500
+    ), "Application must not crash on Civic API 404"
+    assert response.status_code in (
+        400,
+        404,
+    ), f"Expected 400 for upstream 404, got {response.status_code}"
     data = response.json()
     error = data.get("detail") or data
     # Must include a machine-readable error code
-    assert "code" in error, "Response must include a machine-readable error code"
+    assert (
+        "code" in error
+    ), "Response must include a machine-readable error code"
     assert error["code"] == "UPSTREAM_CLIENT_ERROR"
 
 
@@ -409,7 +438,9 @@ def test_missing_api_key_returns_500(client: TestClient) -> None:
         new_callable=AsyncMock,
         side_effect=exc,
     ):
-        response = client.post("/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD)
+        response = client.post(
+            "/api/v1/elections/info", json=VALID_ELECTION_PAYLOAD
+        )
 
     assert response.status_code == 500
     data = response.json()
@@ -568,7 +599,9 @@ def test_settings_get_allowed_origins() -> None:
     """Settings.get_allowed_origins() should parse comma-separated values."""
     from app.config import Settings
 
-    s = Settings(civic_api_key="dummy", allowed_origins="https://a.com, https://b.com")
+    s = Settings(
+        civic_api_key="dummy", allowed_origins="https://a.com, https://b.com"
+    )
     origins = s.get_allowed_origins()
     assert origins == ["https://a.com", "https://b.com"]
 
@@ -618,7 +651,12 @@ def test_gcp_status_endpoint(client: TestClient) -> None:
     assert response.status_code == 200
     data = response.json()
     # Must contain all four GCP service keys
-    for key in ("cloud_logging", "secret_manager", "firestore", "cloud_storage"):
+    for key in (
+        "cloud_logging",
+        "secret_manager",
+        "firestore",
+        "cloud_storage",
+    ):
         assert key in data, f"Missing GCP status key: {key}"
     assert "gcp_project" in data
     assert "cache_backend" in data
@@ -717,11 +755,9 @@ def test_get_secret_no_project() -> None:
 # ---------------------------------------------------------------------------
 
 
-import pytest
-
-
 @pytest.mark.asyncio
-async def test_save_incident_firestore_fallback() -> None:
+@patch("app.services.cloud_services.get_firestore_client", return_value=None)
+async def test_save_incident_firestore_fallback(mock_get_client: MagicMock) -> None:
     """save_incident_to_firestore should return False when Firestore is unavailable."""
     from app.services.cloud_services import save_incident_to_firestore
 
@@ -729,6 +765,7 @@ async def test_save_incident_firestore_fallback() -> None:
     result = await save_incident_to_firestore("test-123", record)
     # In CI without GCP credentials, must return False (not raise)
     assert isinstance(result, bool)
+    assert result is False
 
 
 # ---------------------------------------------------------------------------
@@ -754,10 +791,9 @@ def test_health_is_200_for_cloud_monitoring(client: TestClient) -> None:
     """Cloud Run / Cloud Monitoring probe: GET /api/v1/health must always be 200."""
     for _ in range(3):  # Probe-like repeated calls
         response = client.get("/api/v1/health")
-        assert response.status_code == 200, (
-            f"Health probe returned {response.status_code} – Cloud Run would mark unhealthy"
-        )
+        assert (
+            response.status_code == 200
+        ), f"Health probe returned {response.status_code} – Cloud Run would mark unhealthy"
         data = response.json()
         assert data["status"] == "ok"
         assert data["version"] == "2.1.0"
-

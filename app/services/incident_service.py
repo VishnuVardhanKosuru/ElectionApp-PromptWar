@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -114,22 +115,33 @@ class IncidentService:
         incident_id = str(uuid.uuid4())
         received_at = datetime.now(timezone.utc).isoformat()
 
+        sanitized_name = (
+            re.sub(r"<[^>]*>", "", request.reporter_name) if request.reporter_name else None
+        )
+        sanitized_contact = (
+            re.sub(r"<[^>]*>", "", request.reporter_contact) if request.reporter_contact else None
+        )
+
         record: dict[str, Any] = {
             "incident_id": incident_id,
             "received_at": received_at,
-            "location": request.location,
+            "location": re.sub(r"<[^>]*>", "", request.location),
             "incident_type": request.incident_type.value,
             "severity": request.severity.value,
-            "description": request.description,
-            "reporter_name": request.reporter_name,
-            "reporter_contact": request.reporter_contact,
+            "description": re.sub(r"<[^>]*>", "", request.description),
+            "reporter_name": sanitized_name,
+            "reporter_contact": sanitized_contact,
             "status": "received",
         }
 
         # ── Primary: Google Cloud Firestore ───────────────────────────────
-        from app.services.cloud_services import save_incident_to_firestore  # noqa: PLC0415
+        from app.services.cloud_services import (
+            save_incident_to_firestore,
+        )  # noqa: PLC0415
 
-        saved_to_firestore = await save_incident_to_firestore(incident_id, record)
+        saved_to_firestore = await save_incident_to_firestore(
+            incident_id, record
+        )
 
         # ── Fallback: in-memory store ─────────────────────────────────────
         if not saved_to_firestore:
@@ -148,7 +160,9 @@ class IncidentService:
                 "severity": request.severity.value,
                 "location": request.location,
                 "received_at": received_at,
-                "persisted_to": "firestore" if saved_to_firestore else "memory",
+                "persisted_to": (
+                    "firestore" if saved_to_firestore else "memory"
+                ),
             },
         )
 
@@ -168,7 +182,9 @@ class IncidentService:
         Returns:
             List of all incident record dictionaries.
         """
-        from app.services.cloud_services import list_incidents_from_firestore  # noqa: PLC0415
+        from app.services.cloud_services import (
+            list_incidents_from_firestore,
+        )  # noqa: PLC0415
 
         firestore_results = await list_incidents_from_firestore()
         if firestore_results is not None:

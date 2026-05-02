@@ -42,8 +42,9 @@ def setup_cloud_logging(log_level: int = logging.INFO) -> bool:
     """
     global _gcp_logging_client  # noqa: PLW0603
     try:
-        import google.cloud.logging as gcp_logging  # type: ignore[import-untyped]
-        from google.cloud.logging.handlers import StructuredLogHandler  # type: ignore[import-untyped]
+        from google.cloud.logging.handlers import (  # type: ignore[import-untyped]
+            StructuredLogHandler,
+        )
 
         try:
             # StructuredLogHandler writes structured JSON to stdout – no gRPC,
@@ -67,9 +68,10 @@ def setup_cloud_logging(log_level: int = logging.INFO) -> bool:
             logger.debug("Cloud Logging handler setup skipped: %s", exc)
             return False
     except ImportError:
-        logger.debug("google-cloud-logging not installed; using stdout logging.")
+        logger.debug(
+            "google-cloud-logging not installed; using stdout logging."
+        )
         return False
-
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +79,9 @@ def setup_cloud_logging(log_level: int = logging.INFO) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def get_secret(secret_name: str, project_id: Optional[str] = None) -> Optional[str]:
+def get_secret(
+    secret_name: str, project_id: Optional[str] = None
+) -> Optional[str]:
     """Retrieve the latest version of a secret from Google Secret Manager.
 
     Args:
@@ -90,18 +94,23 @@ def get_secret(secret_name: str, project_id: Optional[str] = None) -> Optional[s
     """
     resolved_project = project_id or os.environ.get("GOOGLE_CLOUD_PROJECT", "")
     if not resolved_project:
-        logger.debug("GCP project not configured; skipping Secret Manager lookup.")
+        logger.debug(
+            "GCP project not configured; skipping Secret Manager lookup."
+        )
         return None
 
     try:
         from google.cloud import secretmanager  # type: ignore[import-untyped]
-        from google.api_core.exceptions import NotFound, PermissionDenied  # type: ignore[import-untyped]
+        from google.api_core.exceptions import (  # type: ignore[import-untyped]
+            NotFound,
+            PermissionDenied,
+        )
 
         client = secretmanager.SecretManagerServiceClient()
-        resource_name = (
-            f"projects/{resolved_project}/secrets/{secret_name}/versions/latest"
+        resource_name = f"projects/{resolved_project}/secrets/{secret_name}/versions/latest"
+        response = client.access_secret_version(
+            request={"name": resource_name}
         )
-        response = client.access_secret_version(request={"name": resource_name})
         value = response.payload.data.decode("utf-8").strip()
         logger.info(
             "Secret retrieved from Google Secret Manager.",
@@ -155,14 +164,20 @@ def get_firestore_client() -> Optional[Any]:
             )
             return _firestore_client
         except DefaultCredentialsError:
-            logger.debug("Firestore unavailable (no GCP credentials) – using in-memory store.")
+            logger.debug(
+                "Firestore unavailable (no GCP credentials) – using in-memory store."
+            )
             return None
     except ImportError:
-        logger.debug("google-cloud-firestore not installed – using in-memory store.")
+        logger.debug(
+            "google-cloud-firestore not installed – using in-memory store."
+        )
         return None
 
 
-async def save_incident_to_firestore(incident_id: str, record: dict[str, Any]) -> bool:
+async def save_incident_to_firestore(
+    incident_id: str, record: dict[str, Any]
+) -> bool:
     """Persist an incident record to Google Cloud Firestore.
 
     Args:
@@ -177,11 +192,16 @@ async def save_incident_to_firestore(incident_id: str, record: dict[str, Any]) -
         return False
 
     try:
-        doc_ref = client.collection(_INCIDENTS_COLLECTION).document(incident_id)
+        doc_ref = client.collection(_INCIDENTS_COLLECTION).document(
+            incident_id
+        )
         doc_ref.set(record)
         logger.info(
             "Incident saved to Firestore.",
-            extra={"incident_id": incident_id, "collection": _INCIDENTS_COLLECTION},
+            extra={
+                "incident_id": incident_id,
+                "collection": _INCIDENTS_COLLECTION,
+            },
         )
         return True
     except Exception as exc:  # noqa: BLE001
@@ -206,7 +226,10 @@ async def list_incidents_from_firestore() -> Optional[list[dict[str, Any]]]:
         docs = client.collection(_INCIDENTS_COLLECTION).stream()
         return [doc.to_dict() for doc in docs]
     except Exception as exc:  # noqa: BLE001
-        logger.warning("Failed to list incidents from Firestore.", extra={"error": str(exc)})
+        logger.warning(
+            "Failed to list incidents from Firestore.",
+            extra={"error": str(exc)},
+        )
         return None
 
 
@@ -275,6 +298,10 @@ def upload_pdf_to_gcs(
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "GCS upload failed.",
-            extra={"bucket": bucket_name, "blob": blob_name, "error": str(exc)},
+            extra={
+                "bucket": bucket_name,
+                "blob": blob_name,
+                "error": str(exc),
+            },
         )
         return None

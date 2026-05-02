@@ -52,7 +52,9 @@ def _get_api_key() -> str:
     Raises:
         RuntimeError: If ``CIVIC_API_KEY`` is not set or is empty.
     """
-    from app.config import get_settings  # noqa: PLC0415 – intentional lazy import
+    from app.config import (
+        get_settings,
+    )  # noqa: PLC0415 – intentional lazy import
 
     api_key = get_settings().civic_api_key.strip()
     if not api_key:
@@ -321,7 +323,10 @@ class CivicApiClient:
             httpx.HTTPStatusError: On non-retryable API errors.
             RuntimeError: If the API key is missing or retries are exhausted.
         """
-        params: dict[str, Any] = {"address": address, "returnAllAvailableData": True}
+        params: dict[str, Any] = {
+            "address": address,
+            "returnAllAvailableData": True,
+        }
         if election_id is not None:
             params["electionId"] = election_id
         return await self._request("GET", "voterinfo", params=params)
