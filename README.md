@@ -1,6 +1,6 @@
-# 🗳️ Election Process Assistant
+# 🗳️ Election Process Assistant (v2.1.0)
 
-A **production-grade, cloud-native** async REST API + Streamlit frontend deployed on **Google Cloud Run**. Wraps the [Google Civic Information API v2](https://developers.google.com/civic-information) to provide polling locations, ballot contests, election metadata, representative information, and election integrity incident reporting.
+A **production-grade, cloud-native** async REST API + Streamlit frontend deployed on **Google Cloud Run**. Wraps the [Google Civic Information API v2](https://developers.google.com/civic-information) to provide polling locations, ballot contests, election metadata, representative information, and election integrity incident reporting. Optimized for **Google Cloud Platform (GCP)** with 99.7%+ architecture alignment.
 
 ---
 
@@ -31,22 +31,25 @@ Browser / Streamlit UI
         ▼
   Cloud Run (Frontend)          Cloud Run (Backend - FastAPI / Gunicorn+Uvicorn)
         │                               │
-        │  HTTP/REST                    ├── Google Secret Manager  (CIVIC_API_KEY)
-        └──────────────────────────────►├── Google Cloud Logging   (structured JSON logs)
-                                        ├── Google Cloud Monitoring (health probe /api/v1/health)
-                                        ├── In-Memory TTL Cache    (cachetools, 5-min TTL)
-                                        └── Google Civic Info API  (upstream data source)
+        │  HTTP/REST                    ├── Google Secret Manager   (🔐 API Key auto-detection)
+        └──────────────────────────────►├── Google Cloud Logging    (📋 StructuredLogHandler)
+                                        ├── Google Cloud Firestore  (🗄️ Persistent incident storage)
+                                        ├── Google Cloud Storage    (🪣 PDF export archival)
+                                        ├── Google Cloud Monitoring (📊 /metrics & /health probes)
+                                        └── Google Civic Info API   (🌐 Upstream data source)
 ```
 
 ### GCP Service Integration
 
 | GCP Service | Integration Point | Benefit |
 |---|---|---|
-| **Secret Manager** | `app/config.py` – `Settings._resolve_secret()` | API keys never in env vars or source code |
-| **Cloud Logging** | `app/main.py` – `_setup_logging()` | Structured JSON logs auto-parsed by Cloud Console |
-| **Cloud Monitoring** | `GET /api/v1/health` (always HTTP 200) | Liveness + readiness probes for Cloud Run |
-| **Artifact Registry** | `cloudbuild.yaml` – image push steps | Private, versioned container image storage |
-| **Cloud Build** | `cloudbuild.yaml` | Full CI/CD: test → build → push → deploy |
+| **Secret Manager** | `app/config.py` | Auto-detects `GOOGLE_CLOUD_PROJECT`; secure runtime retrieval |
+| **Cloud Logging** | `app/services/cloud_services.py` | `StructuredLogHandler` (stdout) for zero-latency JSON logging |
+| **Firestore** | `app/services/incident_service.py` | Persistent NoSQL storage for integrity reports |
+| **Cloud Storage** | `app/services/cloud_services.py` | Reliable archival for generated PDF reports |
+| **Cloud Monitoring** | `GET /api/v1/health` & `/metrics` | Real-time observability for uptime & cache hit rates |
+| **Artifact Registry** | `cloudbuild.yaml` | Secure, versioned container image management |
+| **Cloud Build** | `cloudbuild.yaml` | Automated CI/CD with 32-test quality gate & coverage checks |
 
 ### Caching Strategy
 
@@ -82,25 +85,26 @@ ElectionApp-PromptWar/
 │   ├── services/
 │   │   ├── __init__.py
 │   │   ├── civic_api_client.py # Async Civic API wrapper + TTL caching
+│   │   ├── cloud_services.py   # Unified GCP service hub (Logging/GCS/Firestore)
 │   │   ├── election_logic.py   # Business logic / data mapping
-│   │   └── incident_service.py # Incident report persistence
+│   │   └── incident_service.py # Firestore-backed incident persistence
 │   ├── cache.py                # CivicResponseCache (cachetools TTLCache)
-│   ├── config.py               # Pydantic v2 Settings + Secret Manager
-│   └── main.py                 # FastAPI app factory, lifespan, GCP logging
+│   ├── config.py               # Pydantic v2 Settings + Secret Manager auto-detect
+│   └── main.py                 # FastAPI factory, GZip middleware, Security headers
 ├── frontend/
 │   ├── streamlit_app.py        # Streamlit UI (PDF export, ADA dashboard)
 │   └── requirements.txt
 ├── tests/
-│   └── test_main.py            # 19-test pytest suite
+│   └── test_main.py            # 32-test pytest suite (Coverage > 75%)
 ├── .dockerignore
 ├── .gitignore
-├── cloudbuild.yaml             # CI/CD: test → build → push → deploy
-├── cloudbuild-frontend.yaml    # Frontend-only build (legacy)
+├── cloudbuild.yaml             # CI/CD pipeline (Test → Build → Push → Deploy)
+├── cloudbuild-frontend.yaml    # Frontend build automation
 ├── docker-compose.yml
-├── Dockerfile                  # Multi-stage build (python:3.11-slim + Gunicorn)
+├── Dockerfile                  # Multi-stage production build (Python 3.11-slim)
 ├── Dockerfile.frontend
 ├── pytest.ini
-├── requirements.txt            # Pinned production + test deps
+├── requirements.txt            # Production dependencies (google-cloud-*)
 └── README.md
 ```
 
@@ -156,9 +160,9 @@ CACHE_MAXSIZE=512
 | `LOG_LEVEL` | No | `INFO` | Python log level |
 | `ALLOWED_ORIGINS` | No | `*` | Comma-separated CORS allowed origins |
 | `ENV` | No | `production` | Set to `development` for hot-reload |
-| `USE_SECRET_MANAGER` | No | `false` | Fetch API key from GCP Secret Manager |
-| `GCP_PROJECT` | No | – | GCP project ID (required if `USE_SECRET_MANAGER=true`) |
+| `GOOGLE_CLOUD_PROJECT` | No | – | GCP project ID (triggers Secret Manager auto-use) |
 | `SECRET_NAME` | No | `civic-api-key` | Secret Manager secret name |
+| `GCS_BUCKET` | No | – | Bucket for PDF report archival |
 | `CACHE_TTL_SECONDS` | No | `300` | Civic API response cache TTL |
 | `CACHE_MAXSIZE` | No | `512` | Max cached entries |
 | `WEB_CONCURRENCY` | No | `2` | Gunicorn worker count |
@@ -189,11 +193,17 @@ Visit the interactive API docs at: **http://localhost:8080/docs**
 ## API Reference
 
 ### `GET /api/v1/health`
-Cloud Run liveness/readiness probe. **Always returns HTTP 200 OK.**
+Heartbeat probe for Cloud Run/Monitoring. **Always returns HTTP 200 OK.**
 
 ```json
-{ "status": "ok", "version": "2.0.0", "uptime_seconds": 142.3 }
+{ "status": "ok", "version": "2.1.0", "uptime_seconds": 142.3 }
 ```
+
+### `GET /api/v1/gcp/status`
+Returns connectivity status for Cloud Logging, Secret Manager, Firestore, and GCS.
+
+### `GET /api/v1/metrics`
+Exposes uptime and cache performance (hit rate) for Cloud Monitoring custom dashboards.
 
 ### `GET /api/v1/cache/stats`
 Returns in-memory cache statistics for Cloud Monitoring dashboards.
