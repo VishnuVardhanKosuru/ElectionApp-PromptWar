@@ -1,0 +1,13 @@
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'Dockerfile.frontend'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/cool-project-495015/election-app/election-frontend:latest'
+      - '.'
+images:
+  - 'us-central1-docker.pkg.dev/cool-project-495015/election-app/election-frontend:latest'
+options:
+  logging: CLOUD_LOGGING_ONLY

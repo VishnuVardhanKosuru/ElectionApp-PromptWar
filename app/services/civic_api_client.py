@@ -5,18 +5,20 @@ Provides:
 - Async HTTP requests via ``httpx``
 - Exponential backoff with jitter for transient failures
 - Structured logging for Cloud Logging compatibility
-- API key sourced exclusively from environment variables
+- API key sourced from ``app.config.Settings`` (supports Secret Manager)
+- In-memory TTL caching via ``app.cache.CivicResponseCache``
 """
 
 import asyncio
 import logging
-import os
 import random
 import time
 from typing import Any, Optional
 from urllib.parse import urljoin
 
 import httpx
+
+from app.cache import get_cache
 
 logger = logging.getLogger(__name__)
 
@@ -38,18 +40,24 @@ _RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def _get_api_key() -> str:
-    """Retrieve the Google Civic API key from the environment.
+    """Retrieve the Google Civic API key from application settings.
+
+    Importing ``get_settings`` here (lazily) avoids a circular import at
+    module load time and ensures Secret Manager resolution has already
+    happened during the lifespan startup.
 
     Returns:
         The API key string.
 
     Raises:
-        RuntimeError: If the ``CIVIC_API_KEY`` environment variable is not set.
+        RuntimeError: If ``CIVIC_API_KEY`` is not set or is empty.
     """
-    api_key = os.environ.get("CIVIC_API_KEY", "").strip()
+    from app.config import get_settings  # noqa: PLC0415 – intentional lazy import
+
+    api_key = get_settings().civic_api_key.strip()
     if not api_key:
         raise RuntimeError(
-            "CIVIC_API_KEY environment variable is not set or is empty. "
+            "CIVIC_API_KEY is not set or is empty. "
             "Set it before starting the application."
         )
     return api_key
@@ -82,6 +90,10 @@ class CivicApiClient:
 
     Designed to be used as an async context manager or instantiated once
     and shared across the application lifetime (stateless).
+
+    Caching is applied transparently for ``get_elections`` and
+    ``get_voter_info`` calls.  Cache keys incorporate the endpoint path
+    and query parameters so different addresses produce distinct entries.
 
     Example::
 
@@ -143,6 +155,10 @@ class CivicApiClient:
     ) -> dict[str, Any]:
         """Execute an authenticated HTTP request with retry / backoff.
 
+        Results for GET requests are transparently cached using the module-
+        level ``CivicResponseCache``.  POST or non-idempotent methods bypass
+        the cache.
+
         Args:
             method: HTTP verb (e.g. ``"GET"``).
             endpoint: API path relative to the base URL.
@@ -163,6 +179,24 @@ class CivicApiClient:
         query: dict[str, Any] = {"key": api_key}
         if params:
             query.update(params)
+
+        # Cache lookup for idempotent GET requests (key excludes the API key)
+        cache_params = {k: v for k, v in query.items() if k != "key"}
+        cache = None
+        cache_key = ""
+        if method.upper() == "GET":
+            try:
+                cache = get_cache()
+                cache_key = cache.make_key(endpoint, cache_params)
+                if (cached := cache.get(cache_key)) is not None:
+                    logger.info(
+                        "Returning cached Civic API response.",
+                        extra={"endpoint": endpoint},
+                    )
+                    return cached
+            except RuntimeError:
+                # Cache not yet initialised (e.g. during tests) – skip caching
+                cache = None
 
         url = urljoin(_BASE_URL, endpoint)
         last_exc: Optional[Exception] = None
@@ -211,7 +245,13 @@ class CivicApiClient:
                     continue
 
                 response.raise_for_status()
-                return response.json()
+                result: dict[str, Any] = response.json()
+
+                # Populate cache on successful GET
+                if cache is not None and cache_key:
+                    cache.set(cache_key, result)
+
+                return result
 
             except httpx.TimeoutException as exc:
                 elapsed = time.monotonic() - start_ts

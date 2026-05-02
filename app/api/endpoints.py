@@ -2,25 +2,31 @@
 FastAPI route controllers for the Election Process Assistant.
 
 Implements the following endpoints:
-- GET  /api/v1/health             – Service health check
+- GET  /api/v1/health             – Service health check (Cloud Run probe)
+- GET  /api/v1/cache/stats        – Cache hit/miss statistics
 - GET  /api/v1/elections/list     – List all available elections
 - POST /api/v1/elections/info     – Voter info for an address/election
 - POST /api/v1/representatives    – Representatives for an address
+- GET  /api/v1/polling-locations  – Polling locations with ADA filter
+- POST /api/v1/report-incident    – Election integrity incident reporting
+- GET  /api/v1/wait-times         – Polling station wait-time estimates
 
 All routes follow strict request validation (via Pydantic) and return
 structured HTTP errors with machine-readable codes.
 """
 
-import logging
-import time
 import hashlib
+import logging
 import random
+import time
 from datetime import datetime, timezone
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
 from app.models.schemas import (
+    Address,
     ElectionInfoRequest,
     ElectionInfoResponse,
     ElectionListResponse,
@@ -31,7 +37,6 @@ from app.models.schemas import (
     IncidentReportRequest,
     IncidentReportResponse,
     NormalizedInput,
-    Address,
     RepresentativeRequest,
     RepresentativeResponse,
     WaitStatus,
@@ -45,6 +50,9 @@ from app.services.incident_service import IncidentService as IncidentSvc
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1", tags=["Election Process Assistant"])
+
+# Module start time for uptime calculation
+_START_TIME: float = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +177,128 @@ def _handle_civic_error(exc: Exception) -> None:
     "/health",
     response_model=HealthResponse,
     summary="Health Check",
-    description="Returns the service status and version. Used by Cloud Run probes.",
+    description=(
+        "Returns the service status, version, and uptime. "
+        "Used by Cloud Run liveness and readiness probes. "
+        "Always returns HTTP 200 OK when the service is operational."
+    ),
 )
 async def health_check() -> HealthResponse:
     """Respond to liveness and readiness probe requests.
 
+    This endpoint is the Cloud Monitoring heartbeat; it must return
+    ``HTTP 200 OK`` as long as the service is healthy.  Cloud Run uses it
+    for both liveness and readiness probes.
+
     Returns:
-        ``HealthResponse`` with status ``"ok"`` and current version.
+        ``HealthResponse`` with status ``"ok"``, version, and uptime.
     """
-    return HealthResponse(status="ok", version="1.0.0")
+    uptime_seconds = round(time.monotonic() - _START_TIME, 1)
+    return HealthResponse(
+        status="ok",
+        version="2.1.0",
+        uptime_seconds=uptime_seconds,
+    )
+
+
+@router.get(
+    "/cache/stats",
+    summary="Cache Statistics",
+    description="Returns hit/miss statistics for the in-memory Civic API response cache.",
+    response_model=dict,
+)
+async def cache_stats() -> dict[str, Any]:
+    """Return operational statistics for the in-memory TTL cache.
+
+    Returns:
+        Dict with ``hits``, ``misses``, ``size``, and ``maxsize`` counters.
+    """
+    try:
+        from app.cache import get_cache  # noqa: PLC0415
+
+        stats = get_cache().stats()
+        logger.info("Cache stats requested.", extra=stats)
+        return stats
+    except RuntimeError:
+        return {"hits": 0, "misses": 0, "size": 0, "maxsize": 0, "note": "Cache not initialised"}
+
+
+@router.get(
+    "/gcp/status",
+    summary="Google Cloud Services Status",
+    description=(
+        "Returns the availability status of each integrated Google Cloud service. "
+        "Useful for operational dashboards and Cloud Monitoring alert policies."
+    ),
+    response_model=dict,
+)
+async def gcp_status() -> dict[str, Any]:
+    """Return live connectivity status for all integrated GCP services.
+
+    Checks:
+    - **Cloud Logging**: handler attachment status
+    - **Secret Manager**: project configuration
+    - **Firestore**: client initialisation status
+    - **Cloud Storage**: client initialisation status
+
+    Returns:
+        Dict mapping service names to their status strings.
+    """
+    from app.services.cloud_services import (  # noqa: PLC0415
+        _gcp_logging_client,
+        get_firestore_client,
+        get_gcs_client,
+    )
+    from app.config import get_settings as _settings  # noqa: PLC0415
+
+    cfg = _settings()
+    return {
+        "cloud_logging": "connected" if _gcp_logging_client is not None else "stdout_fallback",
+        "secret_manager": "configured" if cfg.gcp_project else "not_configured",
+        "firestore": "connected" if get_firestore_client() is not None else "unavailable",
+        "cloud_storage": "connected" if get_gcs_client() is not None else "unavailable",
+        "gcp_project": cfg.gcp_project or "local",
+        "cache_backend": "cachetools.TTLCache",
+    }
+
+
+@router.get(
+    "/metrics",
+    summary="Application Metrics (Cloud Monitoring)",
+    description=(
+        "Returns key application metrics for Google Cloud Monitoring custom dashboards. "
+        "Includes request cache performance and service uptime."
+    ),
+    response_model=dict,
+)
+async def application_metrics() -> dict[str, Any]:
+    """Return application performance metrics for Cloud Monitoring.
+
+    Returns:
+        Dict containing uptime, cache performance, and service metadata.
+    """
+    uptime_s = round(time.monotonic() - _START_TIME, 1)
+    try:
+        from app.cache import get_cache  # noqa: PLC0415
+
+        cache_data = get_cache().stats()
+        total_requests = cache_data["hits"] + cache_data["misses"]
+        hit_rate = (
+            round(cache_data["hits"] / total_requests * 100, 1)
+            if total_requests > 0
+            else 0.0
+        )
+    except RuntimeError:
+        cache_data = {}
+        hit_rate = 0.0
+
+    return {
+        "service": "election-process-assistant",
+        "version": "2.1.0",
+        "uptime_seconds": uptime_s,
+        "cache": {**cache_data, "hit_rate_pct": hit_rate},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 @router.get(

@@ -373,15 +373,17 @@ class ElectionListResponse(BaseModel):
 
 
 class HealthResponse(BaseModel):
-    """Health-check response.
+    """Health-check response for Cloud Run liveness/readiness probes.
 
     Attributes:
-        status: Service status string.
+        status: Service status string (always ``"ok"`` when healthy).
         version: Application version string.
+        uptime_seconds: Seconds elapsed since the process started.
     """
 
     status: str
     version: str
+    uptime_seconds: Optional[float] = None
 
 
 class ErrorDetail(BaseModel):

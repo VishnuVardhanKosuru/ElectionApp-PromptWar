@@ -1,0 +1,158 @@
+# ============================================================
+# cloudbuild.yaml – CI/CD pipeline for Election Process Assistant
+#
+# Pipeline stages (run top-to-bottom):
+#   1. Install test dependencies
+#   2. Run unit tests (with coverage)
+#   3. Build & push backend Docker image (multi-stage, python:3.11-slim)
+#   4. Build & push frontend Docker image
+#   5. Deploy backend to Cloud Run
+#   6. Deploy frontend to Cloud Run
+#
+# Substitutions (set via Cloud Build trigger or --substitutions flag):
+#   _REGION        : GCP region (default: us-central1)
+#   _REPO          : Artifact Registry repository name (default: election-app)
+#   _SERVICE_NAME  : Backend Cloud Run service name
+#   _FRONTEND_SVC  : Frontend Cloud Run service name
+#   _SECRET_NAME   : Secret Manager secret for CIVIC_API_KEY
+# ============================================================
+
+substitutions:
+  _REGION: "us-central1"
+  _REPO: "election-app"
+  _SERVICE_NAME: "election-assistant"
+  _FRONTEND_SVC: "election-frontend"
+  _SECRET_NAME: "civic-api-key"
+
+steps:
+  # --------------------------------------------------------
+  # Step 1 – Install dependencies and run tests
+  # --------------------------------------------------------
+  - id: "run-tests"
+    name: "python:3.11-slim"
+    entrypoint: "bash"
+    args:
+      - "-c"
+      - |
+        pip install -r requirements.txt --quiet
+        python -m pytest tests/ \
+          --cov=app \
+          --cov-report=term-missing \
+          --cov-fail-under=70 \
+          -v
+    waitFor: ["-"]   # Start immediately (no dependency)
+
+  # --------------------------------------------------------
+  # Step 2 – Build the backend Docker image (multi-stage)
+  # --------------------------------------------------------
+  - id: "build-backend"
+    name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "--cache-from"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:latest"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:latest"
+      - "-f"
+      - "Dockerfile"
+      - "."
+    waitFor: ["run-tests"]
+
+  # --------------------------------------------------------
+  # Step 3 – Push backend image to Artifact Registry
+  # --------------------------------------------------------
+  - id: "push-backend"
+    name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}"
+    waitFor: ["build-backend"]
+
+  # --------------------------------------------------------
+  # Step 4 – Build the frontend Docker image
+  # --------------------------------------------------------
+  - id: "build-frontend"
+    name: "gcr.io/cloud-builders/docker"
+    args:
+      - "build"
+      - "--cache-from"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:latest"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:$SHORT_SHA"
+      - "-t"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:latest"
+      - "-f"
+      - "Dockerfile.frontend"
+      - "."
+    waitFor: ["run-tests"]   # Build in parallel with backend
+
+  # --------------------------------------------------------
+  # Step 5 – Push frontend image to Artifact Registry
+  # --------------------------------------------------------
+  - id: "push-frontend"
+    name: "gcr.io/cloud-builders/docker"
+    args:
+      - "push"
+      - "--all-tags"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}"
+    waitFor: ["build-frontend"]
+
+  # --------------------------------------------------------
+  # Step 6 – Deploy backend to Cloud Run
+  # --------------------------------------------------------
+  - id: "deploy-backend"
+    name: "gcr.io/cloud-builders/gcloud"
+    args:
+      - "run"
+      - "deploy"
+      - "${_SERVICE_NAME}"
+      - "--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+      - "--platform=managed"
+      - "--region=${_REGION}"
+      - "--allow-unauthenticated"
+      - "--set-secrets=CIVIC_API_KEY=${_SECRET_NAME}:latest"
+      - "--set-env-vars=LOG_LEVEL=INFO,ENV=production,USE_SECRET_MANAGER=false"
+      - "--memory=256Mi"
+      - "--cpu=1"
+      - "--min-instances=0"
+      - "--max-instances=10"
+      - "--concurrency=80"
+      - "--timeout=30"
+      - "--service-account=election-app-sa@$PROJECT_ID.iam.gserviceaccount.com"
+    waitFor: ["push-backend"]
+
+  # --------------------------------------------------------
+  # Step 7 – Deploy frontend to Cloud Run
+  # --------------------------------------------------------
+  - id: "deploy-frontend"
+    name: "gcr.io/cloud-builders/gcloud"
+    args:
+      - "run"
+      - "deploy"
+      - "${_FRONTEND_SVC}"
+      - "--image=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:$SHORT_SHA"
+      - "--platform=managed"
+      - "--region=${_REGION}"
+      - "--allow-unauthenticated"
+      - "--memory=512Mi"
+      - "--cpu=1"
+      - "--min-instances=0"
+      - "--max-instances=5"
+      - "--concurrency=80"
+      - "--timeout=60"
+    waitFor: ["push-frontend"]
+
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE_NAME}:latest"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_FRONTEND_SVC}:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: "E2_HIGHCPU_8"   # Faster builds with more CPUs
+
+timeout: "1200s"   # 20-minute global timeout

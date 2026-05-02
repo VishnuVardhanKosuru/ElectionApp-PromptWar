@@ -1,20 +1,22 @@
 """
 Incident reporting service.
 
-Stores election integrity incidents in an in-memory list (suitable for
-single-instance Cloud Run deployments or development). In a multi-instance
-production deployment, replace ``_IncidentStore`` with a Cloud Firestore or
-Cloud SQL adapter.
+Persistence strategy (priority order):
+  1. Google Cloud Firestore – primary persistent store on GCP.
+  2. In-memory list – automatic fallback for local development or when
+     Firestore credentials are unavailable.
 
 All incidents are also emitted as structured log entries so Google Cloud
-Logging captures them regardless of persistence layer.
+Logging captures them regardless of which persistence layer is active.
 """
+
+from __future__ import annotations
 
 import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from app.models.schemas import (
     IncidentReportRequest,
@@ -24,12 +26,12 @@ from app.models.schemas import (
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# In-memory store (thread-safe via asyncio.Lock)
+# In-memory fallback store (thread-safe via asyncio.Lock)
 # ---------------------------------------------------------------------------
 
 
-class _IncidentStore:
-    """Async-safe in-memory incident repository.
+class _InMemoryIncidentStore:
+    """Async-safe in-memory incident repository used when Firestore is absent.
 
     Attributes:
         _records: List of stored incident dictionaries.
@@ -37,11 +39,11 @@ class _IncidentStore:
     """
 
     def __init__(self) -> None:
-        """Initialise an empty incident store."""
-        self._records: list[dict] = []
+        """Initialise an empty in-memory incident store."""
+        self._records: list[dict[str, Any]] = []
         self._lock: asyncio.Lock = asyncio.Lock()
 
-    async def add(self, record: dict) -> None:
+    async def add(self, record: dict[str, Any]) -> None:
         """Append a new incident record atomically.
 
         Args:
@@ -50,7 +52,7 @@ class _IncidentStore:
         async with self._lock:
             self._records.append(record)
 
-    async def all(self) -> list[dict]:
+    async def all(self) -> list[dict[str, Any]]:
         """Return a snapshot of all stored incidents.
 
         Returns:
@@ -59,7 +61,7 @@ class _IncidentStore:
         async with self._lock:
             return list(self._records)
 
-    async def get_by_id(self, incident_id: str) -> Optional[dict]:
+    async def get_by_id(self, incident_id: str) -> Optional[dict[str, Any]]:
         """Retrieve a single incident by its UUID.
 
         Args:
@@ -75,8 +77,8 @@ class _IncidentStore:
         return None
 
 
-# Module-level singleton – shared across all requests within a process
-_store = _IncidentStore()
+# Module-level in-memory fallback singleton
+_memory_store = _InMemoryIncidentStore()
 
 
 # ---------------------------------------------------------------------------
@@ -87,14 +89,21 @@ _store = _IncidentStore()
 class IncidentService:
     """Business logic for election integrity incident reporting.
 
-    Validates, enriches, stores, and logs incident reports in a stateless,
-    concurrent-safe manner.
+    Uses Google Cloud Firestore as the primary store and falls back
+    transparently to an in-memory list when GCP credentials are unavailable.
+    All incidents are also emitted as structured Cloud Logging entries for
+    independent auditability.
     """
 
     async def report_incident(
         self, request: IncidentReportRequest
     ) -> IncidentReportResponse:
         """Accept, store, and log an election integrity incident.
+
+        Storage flow:
+          1. Try Firestore (``save_incident_to_firestore``).
+          2. On failure or unavailability, append to in-memory store.
+          3. Emit a structured ``WARNING`` log entry regardless.
 
         Args:
             request: Validated ``IncidentReportRequest`` from the API layer.
@@ -105,7 +114,7 @@ class IncidentService:
         incident_id = str(uuid.uuid4())
         received_at = datetime.now(timezone.utc).isoformat()
 
-        record = {
+        record: dict[str, Any] = {
             "incident_id": incident_id,
             "received_at": received_at,
             "location": request.location,
@@ -117,9 +126,20 @@ class IncidentService:
             "status": "received",
         }
 
-        await _store.add(record)
+        # ── Primary: Google Cloud Firestore ───────────────────────────────
+        from app.services.cloud_services import save_incident_to_firestore  # noqa: PLC0415
 
-        # Emit structured log – captured by Cloud Logging
+        saved_to_firestore = await save_incident_to_firestore(incident_id, record)
+
+        # ── Fallback: in-memory store ─────────────────────────────────────
+        if not saved_to_firestore:
+            await _memory_store.add(record)
+            logger.debug(
+                "Incident stored in memory (Firestore unavailable).",
+                extra={"incident_id": incident_id},
+            )
+
+        # ── Structured audit log (always emitted) ─────────────────────────
         logger.warning(
             "Election integrity incident received.",
             extra={
@@ -128,6 +148,7 @@ class IncidentService:
                 "severity": request.severity.value,
                 "location": request.location,
                 "received_at": received_at,
+                "persisted_to": "firestore" if saved_to_firestore else "memory",
             },
         )
 
@@ -135,17 +156,21 @@ class IncidentService:
             incident_id=incident_id,
             status="received",
             message=(
-                f"Your report (ID: {incident_id}) has been received and logged. "
-                "For immediate assistance during voting, contact your local "
-                "election authority or call the Election Protection Hotline: "
-                "1-866-OUR-VOTE."
+                f"Your report (ID: {incident_id}) has been received and securely logged. "
+                "For immediate assistance during voting, contact your local election "
+                "authority or call the Election Protection Hotline: 1-866-OUR-VOTE."
             ),
         )
 
-    async def list_incidents(self) -> list[dict]:
-        """Return all stored incidents (admin use only in production).
+    async def list_incidents(self) -> list[dict[str, Any]]:
+        """Return all stored incidents from Firestore or in-memory fallback.
 
         Returns:
             List of all incident record dictionaries.
         """
-        return await _store.all()
+        from app.services.cloud_services import list_incidents_from_firestore  # noqa: PLC0415
+
+        firestore_results = await list_incidents_from_firestore()
+        if firestore_results is not None:
+            return firestore_results
+        return await _memory_store.all()

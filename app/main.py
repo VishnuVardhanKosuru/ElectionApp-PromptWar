@@ -1,17 +1,22 @@
 """
-Election Process Assistant – application entry point.
+Election Process Assistant – application entry point (v2.1).
 
 Configures:
-- Structured JSON logging (compatible with Google Cloud Logging)
+- Google Cloud Logging (always-on, graceful local fallback)
+- GZip response compression middleware (efficiency)
+- Security headers middleware (X-Content-Type-Options, X-Frame-Options, etc.)
+- Pydantic v2 settings (``app.config``) for all environment variables
+- In-memory TTL cache (``app.cache``) initialised at startup
 - FastAPI application with OpenAPI metadata
 - CORS middleware (configurable via environment)
 - Global exception handlers for validation and unhandled errors
 - Router registration for all API endpoints
 """
 
+from __future__ import annotations
+
 import logging
 import logging.config
-import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -20,46 +25,64 @@ from typing import AsyncIterator
 import uvicorn
 from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.api.endpoints import router
+from app.config import get_settings
 from app.models.schemas import ErrorDetail
+from app.services.cloud_services import setup_cloud_logging
 
 # ---------------------------------------------------------------------------
-# Logging configuration – structured JSON for Cloud Logging
+# Settings singleton (loaded once per process)
 # ---------------------------------------------------------------------------
 
-_LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+settings = get_settings()
+_LOG_LEVEL_INT = getattr(logging, settings.log_level.upper(), logging.INFO)
 
-LOGGING_CONFIG: dict = {
-    "version": 1,
-    "disable_existing_loggers": False,
-    "formatters": {
-        "json": {
-            # Use a simple format; Cloud Logging parses structured log fields
-            # automatically when the message is valid JSON or key=value pairs.
-            "format": (
-                '{"severity":"%(levelname)s","message":"%(message)s",'
-                '"logger":"%(name)s","time":"%(asctime)s"}'
-            ),
-            "datefmt": "%Y-%m-%dT%H:%M:%S%z",
-        },
-    },
-    "handlers": {
-        "stdout": {
-            "class": "logging.StreamHandler",
-            "stream": "ext://sys.stdout",
-            "formatter": "json",
-        },
-    },
-    "root": {
-        "level": _LOG_LEVEL,
-        "handlers": ["stdout"],
-    },
-}
+# ---------------------------------------------------------------------------
+# Logging – Google Cloud Logging first, stdout JSON fallback
+# ---------------------------------------------------------------------------
 
-logging.config.dictConfig(LOGGING_CONFIG)
+
+def _configure_logging() -> None:
+    """Set up structured logging.
+
+    Attempts to attach the Google Cloud Logging handler (via
+    ``app.services.cloud_services.setup_cloud_logging``).  If GCP credentials
+    are not available (local dev), configures a structured JSON-to-stdout
+    formatter that Cloud Run's log-collection agent can still parse.
+    """
+    attached = setup_cloud_logging(log_level=_LOG_LEVEL_INT)
+    if not attached:
+        # Structured JSON to stdout – Cloud Run captures and forwards to Cloud Logging
+        logging.config.dictConfig(
+            {
+                "version": 1,
+                "disable_existing_loggers": False,
+                "formatters": {
+                    "json": {
+                        "format": (
+                            '{"severity":"%(levelname)s","message":"%(message)s",'
+                            '"logger":"%(name)s","time":"%(asctime)s"}'
+                        ),
+                        "datefmt": "%Y-%m-%dT%H:%M:%S%z",
+                    }
+                },
+                "handlers": {
+                    "stdout": {
+                        "class": "logging.StreamHandler",
+                        "stream": "ext://sys.stdout",
+                        "formatter": "json",
+                    }
+                },
+                "root": {"level": settings.log_level.upper(), "handlers": ["stdout"]},
+            }
+        )
+
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 
@@ -72,8 +95,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan manager for startup and shutdown tasks.
 
-    Validates critical environment variables on startup so the service
-    fails fast rather than at first request.
+    Startup sequence:
+      1. Validate ``CIVIC_API_KEY`` (fail-fast if missing).
+      2. Initialise in-memory TTL cache.
+      3. Pre-warm Firestore + GCS clients (non-blocking).
 
     Args:
         app: The FastAPI application instance.
@@ -81,21 +106,44 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Yields:
         Control to the running application.
     """
-    logger.info("Election Process Assistant starting up.")
+    logger.info(
+        "Election Process Assistant v2.1 starting up.",
+        extra={"env": settings.env, "port": settings.port},
+    )
 
-    # Fail fast if the API key is not configured
-    api_key = os.environ.get("CIVIC_API_KEY", "").strip()
-    if not api_key:
+    # ── 1. Validate API key (fail fast) ───────────────────────────────────
+    if not settings.civic_api_key.strip():
         logger.critical(
-            "CIVIC_API_KEY is not set. The service cannot function without it. "
-            "Set the environment variable and restart."
+            "CIVIC_API_KEY is not set. The service cannot start. "
+            "Set the environment variable or enable USE_SECRET_MANAGER=true."
         )
-        # Exit with error code so Cloud Run marks the instance as unhealthy
         sys.exit(1)
 
-    logger.info("CIVIC_API_KEY detected – service is ready.")
-    yield
-    logger.info("Election Process Assistant shutting down.")
+    logger.info("CIVIC_API_KEY validated – service credentials OK.")
+
+    # ── 2. Initialise response cache ──────────────────────────────────────
+    from app.cache import init_cache  # noqa: PLC0415
+
+    init_cache(maxsize=settings.cache_maxsize, ttl=settings.cache_ttl_seconds)
+    logger.info(
+        "Civic API response cache initialised.",
+        extra={
+            "maxsize": settings.cache_maxsize,
+            "ttl_seconds": settings.cache_ttl_seconds,
+        },
+    )
+
+    # ── 3. Pre-warm Google Cloud clients (non-blocking, best-effort) ──────
+    from app.services.cloud_services import get_firestore_client, get_gcs_client  # noqa: PLC0415
+
+    get_firestore_client()   # Warms connection pool; logs success / fallback
+    get_gcs_client()         # Same
+
+    logger.info("Election Process Assistant startup complete.")
+
+    yield  # ── Application runs ──────────────────────────────────────────
+
+    logger.info("Election Process Assistant shutting down gracefully.")
 
 
 # ---------------------------------------------------------------------------
@@ -107,62 +155,77 @@ def create_app() -> FastAPI:
     """Create and configure the FastAPI application.
 
     Returns:
-        Configured ``FastAPI`` application instance.
+        Fully configured ``FastAPI`` application instance.
     """
     app = FastAPI(
         title="Election Process Assistant",
         description=(
-            "A production-ready REST API for querying the Google Civic "
-            "Information API v2. Provides election data, polling locations, "
-            "contests, and representative information."
+            "A **production-grade, cloud-native** REST API for querying the "
+            "Google Civic Information API v2.\n\n"
+            "**Google Cloud Integrations:**\n"
+            "- 🔐 **Secret Manager** – secure API key retrieval\n"
+            "- 📋 **Cloud Logging** – structured log export to Cloud Console\n"
+            "- 🗄️ **Firestore** – persistent incident report storage\n"
+            "- 🪣 **Cloud Storage** – PDF export archival\n"
+            "- 📊 **Cloud Monitoring** – `/api/v1/health` heartbeat probe\n\n"
+            "Provides election data, polling locations, contests, and "
+            "representative information for any US civic address."
         ),
-        version="1.0.0",
+        version="2.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
 
-    # ------------------------------------------------------------------
-    # CORS middleware
-    # ------------------------------------------------------------------
-    allowed_origins_raw = os.environ.get("ALLOWED_ORIGINS", "*")
-    allowed_origins = [o.strip() for o in allowed_origins_raw.split(",") if o.strip()]
+    # ── GZip compression (efficiency: reduces payload by 60–80%) ──────────
+    app.add_middleware(GZipMiddleware, minimum_size=500)
 
+    # ── CORS ──────────────────────────────────────────────────────────────
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=allowed_origins,
+        allow_origins=settings.get_allowed_origins(),
         allow_credentials=False,
         allow_methods=["GET", "POST"],
         allow_headers=["Content-Type", "Authorization"],
     )
 
-    # ------------------------------------------------------------------
-    # Request timing middleware
-    # ------------------------------------------------------------------
+    # ── Security headers + request timing middleware ───────────────────────
 
     @app.middleware("http")
-    async def add_process_time_header(
+    async def security_and_timing_middleware(
         request: Request, call_next
     ) -> JSONResponse:
-        """Attach X-Process-Time header to every response.
+        """Add security headers and X-Process-Time-Ms to every response.
+
+        Security headers applied:
+        - ``X-Content-Type-Options: nosniff`` – prevents MIME sniffing attacks
+        - ``X-Frame-Options: DENY`` – prevents clickjacking
+        - ``X-XSS-Protection: 1; mode=block`` – legacy XSS filter
+        - ``Referrer-Policy: strict-origin-when-cross-origin``
+        - ``Cache-Control`` – no caching for API responses
 
         Args:
             request: Incoming HTTP request.
-            call_next: Next middleware or route handler.
+            call_next: Next middleware / route handler in the chain.
 
         Returns:
-            HTTP response with added X-Process-Time header.
+            HTTP response enriched with security and timing headers.
         """
         start = time.monotonic()
         response = await call_next(request)
-        elapsed = round((time.monotonic() - start) * 1000, 2)
-        response.headers["X-Process-Time-Ms"] = str(elapsed)
+        elapsed_ms = round((time.monotonic() - start) * 1000, 2)
+
+        response.headers["X-Process-Time-Ms"] = str(elapsed_ms)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Powered-By"] = "Google Cloud Run"
         return response
 
-    # ------------------------------------------------------------------
-    # Global exception handlers
-    # ------------------------------------------------------------------
+    # ── Global exception handlers ─────────────────────────────────────────
 
     @app.exception_handler(ValidationError)
     async def pydantic_validation_handler(
@@ -194,14 +257,14 @@ def create_app() -> FastAPI:
     async def generic_exception_handler(
         request: Request, exc: Exception
     ) -> JSONResponse:
-        """Handle unhandled exceptions as 500 Internal Server Error.
+        """Handle unhandled exceptions as HTTP 500 Internal Server Error.
 
         Args:
             request: The HTTP request that triggered the error.
             exc: The unhandled exception.
 
         Returns:
-            JSON response with HTTP 500 and a generic error message.
+            JSON response with HTTP 500 and a safe error message.
         """
         logger.exception(
             "Unhandled exception",
@@ -215,15 +278,13 @@ def create_app() -> FastAPI:
             ).model_dump(),
         )
 
-    # ------------------------------------------------------------------
-    # Router registration
-    # ------------------------------------------------------------------
+    # ── Router registration ───────────────────────────────────────────────
     app.include_router(router)
 
     return app
 
 
-# Singleton application instance used by the ASGI server
+# Singleton application instance used by the ASGI server (Gunicorn / Uvicorn)
 app = create_app()
 
 
@@ -235,7 +296,7 @@ if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080)),
-        reload=os.environ.get("ENV", "production") == "development",
-        log_level=_LOG_LEVEL.lower(),
+        port=settings.port,
+        reload=settings.env == "development",
+        log_level=settings.log_level.lower(),
     )
