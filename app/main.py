@@ -278,8 +278,27 @@ def create_app() -> FastAPI:
             ).model_dump(),
         )
 
+    # ── Root route (Welcome & Docs) ───────────────────────────────────────
+
+    @app.get("/", include_in_schema=False)
+    async def root():
+        """Welcome page for the Election Process Assistant API."""
+        return {
+            "name": "Election Process Assistant API",
+            "version": "2.1.0",
+            "status": "operational",
+            "documentation": "/docs",
+            "health": "/api/v1/health",
+            "message": (
+                "Welcome to the Election Process Assistant API. "
+                "This is a cloud-native service optimized for GCP. "
+                "Visit /docs for full API reference."
+            ),
+        }
+
     # ── Router registration ───────────────────────────────────────────────
     app.include_router(router)
+
 
     return app
 
